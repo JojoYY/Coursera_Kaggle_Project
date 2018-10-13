@@ -50,8 +50,7 @@ def clean_items_categ_data():
 def clean_shops_data():
     shops_data = pd.read_csv(path_to_data + '/shops.csv')
     # Translations from google translate
-    shop_names_eng = pd.read_table('shops_translated.txt', header=None)
-    shops_data['shop_name_eng'] = shop_names_eng
+    shops_data['shop_name_eng'] = pd.read_table('shops_translated.txt', header=None)
 
     # standardize shop names to extract further info
     shops_data['shop_name_eng'] = shops_data['shop_name_eng'].apply(lambda x: x.lower())
@@ -88,3 +87,13 @@ def merge_all_train_data():
 
     all_train = all_train[date_cols + shop_cols + item_all_cols.tolist() + sale_cols]
     return all_train
+
+
+def load_test_data():
+    test_data = pd.read_csv(path_to_data + '/test.csv')
+    return test_data
+
+
+def load_submission_file():
+    sample_submission_data = pd.read_csv(path_to_data + '/sample_submission.csv')
+    return sample_submission_data
