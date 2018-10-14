@@ -1,10 +1,11 @@
 import numpy as np
 import pandas as pd
 
-path_to_data = '/home/johanna/Data/Coursera_Kaggle_Project'
+
+PATH_TO_DATA = '/home/johanna/Data/Coursera_Kaggle_Project'
 
 
-def clean_sales_data():
+def clean_sales_data(path_to_data=PATH_TO_DATA):
     sales_train_data = pd.read_csv(path_to_data + '/sales_train_v2.csv')
 
     # Correct data format
@@ -29,13 +30,13 @@ def clean_sales_data():
     return sales_train_data
 
 
-def clean_items_data():
+def clean_items_data(path_to_data=PATH_TO_DATA):
     items_data = pd.read_csv(path_to_data + '/items.csv')
     items_data['item_name_proc'] = items_data['item_name'].apply(lambda x: x.lstrip(' \"!*/'))
     return items_data
 
 
-def clean_items_categ_data():
+def clean_items_categ_data(path_to_data=PATH_TO_DATA):
     item_categ_data = pd.read_csv(path_to_data + '/item_categories.csv')
     # Translations from google translate
     item_categ_names_eng = pd.read_table('item_categories_names_translated.txt', header=None)
@@ -47,7 +48,7 @@ def clean_items_categ_data():
     return item_categ_data
 
 
-def clean_shops_data():
+def clean_shops_data(path_to_data=PATH_TO_DATA):
     shops_data = pd.read_csv(path_to_data + '/shops.csv')
     # Translations from google translate
     shops_data['shop_name_eng'] = pd.read_table('shops_translated.txt', header=None)
@@ -59,7 +60,7 @@ def clean_shops_data():
     return shops_data
 
 
-def merge_all_train_data():
+def merge_all_train_data(path_to_data=PATH_TO_DATA):
     sales_train_data = clean_sales_data()
     items_data = clean_items_data()
     item_categ_data = clean_items_categ_data()
@@ -89,11 +90,11 @@ def merge_all_train_data():
     return all_train
 
 
-def load_test_data():
+def load_test_data(path_to_data=PATH_TO_DATA):
     test_data = pd.read_csv(path_to_data + '/test.csv')
     return test_data
 
 
-def load_submission_file():
+def load_submission_file(path_to_data=PATH_TO_DATA):
     sample_submission_data = pd.read_csv(path_to_data + '/sample_submission.csv')
     return sample_submission_data
