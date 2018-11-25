@@ -3,6 +3,7 @@ import numpy as np
 import gc
 from itertools import product
 from functools import reduce
+from sklearn.metrics import r2_score, mean_squared_error
 
 PATH_TO_DATA = '/home/johanna/Data/Coursera_Kaggle_Project'
 
@@ -24,30 +25,42 @@ def downcast_dtypes(df):
     return df
 
 
-def clean_sales_data(level='monthly', path_to_data=PATH_TO_DATA):
-    sales_train_data = pd.read_csv(path_to_data + '/sales_train_v2.csv')
+def clean_sales_data(path_to_data=PATH_TO_DATA, level=None):
+    df_sales = pd.read_csv(path_to_data + '/sales_train_v2.csv')
 
     # drop the 6 duplicated rows
-    sales_train_data = sales_train_data.drop_duplicates()
+    df_sales = df_sales.drop_duplicates()
 
     # convert item count data to integer
-    sales_train_data['item_cnt_day'] = sales_train_data['item_cnt_day'].astype(int)
+    df_sales['item_cnt_day'] = df_sales['item_cnt_day'].astype(int)
 
     # correct data format
-    sales_train_data['date'] = pd.to_datetime(sales_train_data['date'], format='%d.%m.%Y')
-
-    # extract monthly date features
-    sales_train_data['year'] = sales_train_data['date'].dt.year
-    sales_train_data['month'] = sales_train_data['date'].dt.month
-
-    if level=='daily':
-        # extract daily date features
-        sales_train_data['day_of_month'] = sales_train_data['date'].dt.day
-        sales_train_data['day_of_week'] = sales_train_data['date'].dt.weekday
-        sales_train_data['weekday_name'] = sales_train_data['date'].dt.weekday_name
-    return sales_train_data
+    df_sales['date'] = pd.to_datetime(df_sales['date'], format='%d.%m.%Y')
+    return df_sales
 
 
+def make_monthly_features_from_sales(sales):
+    df_sales = sales.copy()
+    df_sales['year'] = df_sales['date'].dt.year
+    df_sales['month'] = df_sales['date'].dt.month
+
+    month_to_quarters = {1: 'Q1', 2: 'Q1', 3: 'Q1',
+                         4: 'Q2', 5: 'Q2', 6: 'Q2',
+                         7: 'Q3', 8: 'Q3', 9: 'Q3',
+                         10: 'Q4', 11: 'Q4', 12: 'Q4'}
+    df_sales['quarters'] = df_sales['month'].map(month_to_quarters)
+    df_sales['december'] = df_sales['date_block_num'].apply(lambda x: x in [11, 23])
+    return df_sales
+
+
+def make_daily_features_from_sales(sales):
+    df_sales = sales.copy()
+    df_sales['day_of_month'] = df_sales['date'].dt.day
+    df_sales['weekday_name'] = df_sales['date'].dt.weekday_name
+    df_sales['day_of_week'] = df_sales['date'].dt.weekday
+    return df_sales
+
+    
 def clean_items_data(path_to_data=PATH_TO_DATA):
     items_data = pd.read_csv(path_to_data + '/items.csv')
     items_data['item_name_proc'] = items_data['item_name'].apply(lambda x: x.lstrip(' \"!*/'))
@@ -94,10 +107,10 @@ def merge_items_data(path_to_data=PATH_TO_DATA):
     
 
 def merge_all_train_data(path_to_data=PATH_TO_DATA):
-    sales_train_data = clean_sales_data()
-    items_data = clean_items_data()
-    item_categ_data = clean_items_categ_data()
-    shops_data = clean_shops_data()
+    sales_train_data = clean_sales_data(path_to_data)
+    items_data = clean_items_data(path_to_data)
+    item_categ_data = clean_items_categ_data(path_to_data)
+    shops_data = clean_shops_data(path_to_data)
 
     item_cols = ['item_id', 'item_name_proc', 'item_category_id']
     # we drop original names since translations are clear
@@ -197,36 +210,36 @@ def create_monthly_sales_grid(sales):
 
 
 def create_lagged_sales(all_data, shift_range, cols_to_shift):
-    
+    df = all_data.copy()
     index_cols = ['shop_id', 'item_id', 'date_block_num']
     
     for month_shift in shift_range:
         print('Calculating shift by %d periods' % month_shift)    
-        train_shift = all_data[index_cols + cols_to_shift].copy()
+        train_shift = df[index_cols + cols_to_shift].copy()
         # shift index to create block of lagged series
         train_shift['date_block_num'] = train_shift['date_block_num'] + month_shift
         # reset column names to reflect lagging
         foo = lambda x: '{}_lag_{}'.format(x, month_shift) if x in cols_to_shift else x
         train_shift = train_shift.rename(columns=foo)
         # merge lagged columns to input dataframe
-        all_data = pd.merge(all_data, train_shift, on=index_cols, how='left')
+        df = pd.merge(df, train_shift, on=index_cols, how='left')
         
     # List of all lagged features
-    lag_cols = [col for col in all_data.columns if col[-1] in [str(item) for item in shift_range]]
+    lag_cols = [col for col in df.columns if col[-1] in [str(item) for item in shift_range]]
     # for (shop, item) pairs not available at lagged month, fill with 0
-    all_data[lag_cols] = all_data[lag_cols].fillna(0).astype(int)   
+    df[lag_cols] = df[lag_cols].fillna(0).astype(int)   
     
     # this fills unavailable lags with artificial 0, delete rows for training
     print('Deleting date_block_num < %d from data' % np.max(shift_range))
-    all_data = all_data.loc[all_data['date_block_num']>= np.max(shift_range)]
+    df = df.loc[df['date_block_num']>= np.max(shift_range)]
     
     # it also fills unvailable target values 
     del train_shift
     gc.collect()
-    return all_data, lag_cols
+    return df
 
 
-def create_all_monthly_sales_grid_with_lags(lags=[1, 2, 3, 4, 5, 12],
+def create_all_monthly_sales_grid_with_lags(lags=None,
                                             cols_to_lag=['target', 'target_item', 'target_shop'],
                                             path_to_data=PATH_TO_DATA):
     sales = clean_sales_data(path_to_data)  # labelled training data
@@ -241,12 +254,37 @@ def create_all_monthly_sales_grid_with_lags(lags=[1, 2, 3, 4, 5, 12],
     
     # concatenate train and test grid for feature generation
     all_grid = pd.concat([sales_grid, test_grid], ignore_index=True, sort=True)
-    all_sales, lag_cols = create_lagged_sales(all_grid, shift_range=lags, cols_to_shift=cols_to_lag)
-    del sales, test_data
+
+    if lags:
+        all_sales = create_lagged_sales(all_grid, shift_range=lags, cols_to_shift=cols_to_lag)
+    del sales, test_data, all_grid
     gc.collect()
-    return all_sales, lag_cols
+    return all_sales
     
-    
+
+def add_seasonality_features(sales_data):
+    sales = sales_data.copy()
+
+   # hard-coded mapping from date_block_num to month of the year (derived from original sales train data)
+
+    months = np.tile(np.arange(1, 13), 3)[:-1]
+    date_blocks = np.arange(35)
+    date_block_to_month = pd.Series(months, index=date_blocks)
+
+    sales['month'] = sales['date_block_num'].map(date_block_to_month)
+    sales['december'] = (sales['month']==12)
+
+    month_to_quarters = {1: 'Q1', 2: 'Q1', 3: 'Q1',
+                         4: 'Q2', 5: 'Q2', 6: 'Q2',
+                         7: 'Q3', 8: 'Q3', 9: 'Q3',
+                         10: 'Q4', 11: 'Q4', 12: 'Q4'}
+
+    sales['quarters'] = sales['month'].map(month_to_quarters).astype('category')
+
+    sales['Q1'] = (sales['quarters']=='Q1')
+    sales['Q4'] = (sales['quarters']=='Q4')
+    return sales
+
     
 def train_test_split_by_month(df_all, test_block=33, label='target'):
 
@@ -265,3 +303,20 @@ def train_test_split_by_month(df_all, test_block=33, label='target'):
     print('Train data size:', df_train.shape)
     print('Test data size:', df_test.shape)
     return df_train, df_test
+
+
+def eval_model_pred(model, X_train, y_train, X_val, y_val, clip_val=True):
+    pred_train = model.predict(X_train)
+    pred_val = model.predict(X_val)
+    
+    # truncate predictions to [0, 20] as for test data
+    if clip_val:
+        pred_val = np.clip(pred_val, 0, 20)
+    
+    rsquared = [r2_score(y_train, pred_train), r2_score(y_val, pred_val)]
+    rmse = [np.sqrt(mean_squared_error(y_train, pred_train)), np.sqrt(mean_squared_error(y_val, pred_val))]
+
+    df_out = pd.DataFrame({'R-squared': np.round(rsquared, 3), 'RMSE': np.round(rmse, 3)},
+                      index=['train', 'val'])
+    print(df_out)
+    return model
