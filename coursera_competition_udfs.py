@@ -1,9 +1,12 @@
 import pandas as pd
 import numpy as np
 import gc
+import pickle
 from itertools import product
 from functools import reduce
 from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.preprocessing import StandardScaler, LabelEncoder, OneHotEncoder
+
 
 PATH_TO_DATA = '/home/johanna/Data/Coursera_Kaggle_Project'
 
@@ -25,6 +28,8 @@ def downcast_dtypes(df):
     return df
 
 
+### UDFs for loading raw data ###
+
 def clean_sales_data(path_to_data=PATH_TO_DATA, level=None):
     df_sales = pd.read_csv(path_to_data + '/sales_train_v2.csv')
 
@@ -33,11 +38,56 @@ def clean_sales_data(path_to_data=PATH_TO_DATA, level=None):
 
     # convert item count data to integer
     df_sales['item_cnt_day'] = df_sales['item_cnt_day'].astype(int)
-
-    # correct data format
+    
+    # correct data type
     df_sales['date'] = pd.to_datetime(df_sales['date'], format='%d.%m.%Y')
     return df_sales
 
+    
+def clean_items_data(path_to_data=PATH_TO_DATA):
+    items_data = pd.read_csv(path_to_data + '/items.csv')
+    items_data['item_name_proc'] = items_data['item_name'].apply(lambda x: x.lstrip(' \"!*/'))
+    return items_data
+
+
+def clean_items_categ_data(path_to_data=PATH_TO_DATA):
+    item_categ_data = pd.read_csv(path_to_data + '/item_categories.csv')
+
+    # Translations from google translate
+    item_categ_names_eng = pd.read_table('item_categories_names_translated.txt', header=None)
+
+    item_categ_data['item_category_name_eng'] = item_categ_names_eng
+    item_categ_data['item_category_group'] = (item_categ_data['item_category_name_eng']
+                                                  .apply(lambda x: x.split(' - ')[0])
+                                                      .apply(lambda x: x.lower())
+                                             )
+    
+    return item_categ_data
+
+
+def clean_shops_data(path_to_data=PATH_TO_DATA):
+    shops_data = pd.read_csv(path_to_data + '/shops.csv')
+
+    # Translations from google translate
+    shops_data['shop_name_eng'] = pd.read_table('shops_translated.txt', header=None)
+
+    # standardize shop names to extract further info
+    shops_data['shop_name_eng'] = shops_data['shop_name_eng'].apply(lambda x: x.lower())
+    shops_data['shop_city'] = (shops_data['shop_name_eng'].apply(lambda x: x.split(' ')[0]))
+    return shops_data
+
+
+def merge_items_data(path_to_data=PATH_TO_DATA):
+    items = clean_items_data(path_to_data)
+    categories = clean_items_categ_data(path_to_data)
+    
+    item_cols = ['item_id', 'item_category_id']
+    cat_cols = ['item_category_id', 'item_category_name_eng', 'item_category_group']
+    
+    item_all = pd.merge(items[item_cols], categories[cat_cols], on='item_category_id', how='left')
+    item_all.drop_duplicates(inplace=True)
+    return item_all
+    
 
 def make_monthly_features_from_sales(sales):
     df_sales = sales.copy()
@@ -60,50 +110,29 @@ def make_daily_features_from_sales(sales):
     df_sales['day_of_week'] = df_sales['date'].dt.weekday
     return df_sales
 
-    
-def clean_items_data(path_to_data=PATH_TO_DATA):
-    items_data = pd.read_csv(path_to_data + '/items.csv')
-    items_data['item_name_proc'] = items_data['item_name'].apply(lambda x: x.lstrip(' \"!*/'))
-    return items_data
 
-
-def clean_items_categ_data(path_to_data=PATH_TO_DATA):
-    item_categ_data = pd.read_csv(path_to_data + '/item_categories.csv')
-    # Translations from google translate
-    item_categ_names_eng = pd.read_table('item_categories_names_translated.txt', header=None)
-
-    item_categ_data['item_category_name_eng'] = item_categ_names_eng
-    item_categ_data['item_category_group'] = (item_categ_data['item_category_name_eng']
-                                                  .apply(lambda x: x.split(' - ')[0])
-                                                      .apply(lambda x: x.lower())
-                                                          .astype('category')
-                                             )
-    
-    return item_categ_data
-
-
-def clean_shops_data(path_to_data=PATH_TO_DATA):
-    shops_data = pd.read_csv(path_to_data + '/shops.csv')
-    # Translations from google translate
-    shops_data['shop_name_eng'] = pd.read_table('shops_translated.txt', header=None)
-
-    # standardize shop names to extract further info
-    shops_data['shop_name_eng'] = shops_data['shop_name_eng'].apply(lambda x: x.lower())
-    shops_data['shop_city'] = (shops_data['shop_name_eng'].apply(lambda x: x.split(' ')[0])
-                               .astype('category'))
-    return shops_data
-
-
-def merge_items_data(path_to_data=PATH_TO_DATA):
+def add_item_category_features(sales, path_to_data=PATH_TO_DATA):
+    # data sets to merge
+    df = sales.copy()
     items = clean_items_data(path_to_data)
     categories = clean_items_categ_data(path_to_data)
     
     item_cols = ['item_id', 'item_category_id']
-    cat_cols = ['item_category_id', 'item_category_name_eng', 'item_category_group']
+    item_categ_cols = ['item_category_id', 'item_category_group']
     
-    item_all = pd.merge(items[item_cols], categories[cat_cols], on='item_category_id', how='left')
-    item_all.drop_duplicates(inplace=True)
-    return item_all
+    items_all = pd.merge(items[item_cols], categories[item_categ_cols], on='item_category_id', how='left')
+    items_all.drop_duplicates(inplace=True)
+    return pd.merge(df, items_all, on='item_id', how='left')
+    
+    
+def add_shop_features(sales, path_to_data=PATH_TO_DATA):
+    # data sets to merge
+    df = sales.copy()
+    shops_data = clean_shops_data(path_to_data)
+    #shops_data['shop_id'] = shops_data['shop_id'].astype('category')
+    
+    shop_cols = ['shop_id', 'shop_city']
+    return df.merge(shops_data[shop_cols], on='shop_id', how='left')
     
 
 def merge_all_train_data(path_to_data=PATH_TO_DATA):
@@ -145,7 +174,7 @@ def load_submission_file(path_to_data=PATH_TO_DATA):
     sample_submission_data = pd.read_csv(path_to_data + '/sample_submission.csv')
     return sample_submission_data
 
-
+### UDFs for aggregating sales data by month ####
 def create_shop_item_grid_by_month(sales):
     """Creates a dataframe with all shop-item indices available each month.
 
@@ -161,12 +190,11 @@ def create_shop_item_grid_by_month(sales):
     for block_num in sales['date_block_num'].unique():
         cur_shops = sales.loc[sales['date_block_num'] == block_num, 'shop_id'].unique()
         cur_items = sales.loc[sales['date_block_num'] == block_num, 'item_id'].unique()
-        grid.append(np.array(list(product(*[cur_shops, cur_items, [block_num]])), dtype='int32'))
+        grid.append(np.array(list(product(*[cur_shops, cur_items, [block_num]]))))
 
     # Turn the grid into a dataframe
     return pd.DataFrame(np.vstack(grid),
-                        columns=['shop_id', 'item_id', 'date_block_num'],
-                        dtype=np.int32)
+                        columns=['shop_id', 'item_id', 'date_block_num'])
 
   
 def create_monthly_sales_grid(sales):
@@ -182,7 +210,7 @@ def create_monthly_sales_grid(sales):
                             .agg({'item_cnt_day': 'sum'})
                                 .rename(columns={'item_cnt_day': 'target'})
                        )
-    
+
     all_data = pd.merge(monthly_grid, target_shop_item, how='left', on=shop_item_month).fillna(0)
     print('column added:', 'target')
 
@@ -259,6 +287,11 @@ def create_all_monthly_sales_grid_with_lags(lags=None,
         all_sales = create_lagged_sales(all_grid, shift_range=lags, cols_to_shift=cols_to_lag)
     del sales, test_data, all_grid
     gc.collect()
+    
+    # delete unavailable information about label at the time
+    all_sales.drop(columns=['target_item', 'target_shop'], inplace=True)
+
+    #all_sales['shop_id'] = all_sales['shop_id'].astype('category')
     return all_sales
     
 
@@ -283,31 +316,132 @@ def add_seasonality_features(sales_data):
 
     sales['Q1'] = (sales['quarters']=='Q1')
     sales['Q4'] = (sales['quarters']=='Q4')
+    
+    # remove month and quarter information to keep only the major ones
+    sales.drop(columns=['month', 'quarters'], inplace=True)
     return sales
 
+
+def add_sales_features(sales):
+    # add features to single out no sales
+    df = sales.copy()
+    df['target_shop_zero'] = (df['target_shop_lag_1']==0)
+
+    df['target_item_zero'] = (df['target_item_lag_1']==0)
+
+    df['target_shop_recent_zero'] = ((df['target_shop_lag_1']==0) &
+                                            (df['target_shop_lag_2']==0) & 
+                                            (df['target_shop_lag_3']==0))
+
+    df['target_item_recent_zero'] = ((df['target_item_lag_1']==0) &
+                                            (df['target_item_lag_2']==0) & 
+                                            (df['target_item_lag_3']==0))
+    return df
+
+
+def load_all_monthly_sales(lag_months=[1, 2, 3, 6, 12], seasonality=True, items=True, shops=True):
+    filename = 'monthly_sales_grid_lag_' + '_'.join(str(x) for x in lag_months)
+    all_sales = create_all_monthly_sales_grid_with_lags(lags=lag_months)
+    all_sales = add_sales_features(all_sales)
     
-def train_test_split_by_month(df_all, test_block=33, label='target'):
+    if seasonality:
+        all_sales = add_seasonality_features(all_sales)
+        filename += '_seasonality'
+    
+    if items:
+        all_sales = add_item_category_features(all_sales)
+        filename += '_items'
+    
+    if shops:
+        all_sales = add_shop_features(all_sales)
+        filename += '_shops'
+#    print('generate and pickling file', filename)
+#    pkl_name = './' + filename + '.pkl'
+#    all_sales.to_pickle(pkl_name)
+    
+#    return pkl_name
+    return all_sales
 
-    first_block = df_all['date_block_num'].min()
-    print('Train data: date_block_num %d to %d' % (first_block, test_block-1))
-    print('Test data: date_block_num %d' % test_block)
 
-    df_train = df_all.loc[df_all['date_block_num']<test_block]
-    df_test = df_all.loc[df_all['date_block_num']==test_block]
+def log_transform(s):
+    # yields a distribution starting at zero
+    s_min = s.min()
+    s_trans = np.log(s-s_min+1)
+    return s_trans, s_min
 
-    if label in df_test.columns:
-        # clip test labels into [0, 20] range
+
+def inv_log_transform(s_trans, s_min):
+    return np.exp(s_trans+s_min-1)
+
+
+def label_encode_categ_cols(df, categ_cols):
+    proc = df.copy()
+    for col in categ_cols:
+        filename = 'enc_' + col + '.pickle'
+        print('label encoding %s and saving to %s' % (col, filename))
+        # training the encoding
+        enc = LabelEncoder().fit(proc[col])
+        # save the encoding for future reversing
+        with open(filename, 'wb') as out_file:
+            pickle.dump(enc, out_file, pickle.HIGHEST_PROTOCOL)
+        # apply encoding
+        proc[col] = enc.transform(proc[col])
+    return proc
+
+
+def inverse_label_encode_categ_cols(df, categ_cols):
+    # this only works in combination with the label_encode_categ_cols() udf!
+    proc = df.copy()
+    for col in categ_cols:
+        filename = 'enc_' + col + '.pickle'
+        print('inverse label encoding %s from file %s'% (col, filename))        
+        with open(filename, 'rb') as in_file:
+            enc_inv = pickle.load(in_file)
+            proc[col] = enc_inv.inverse_transform(proc[col])
+    return proc
+    
+    
+def train_test_split_by_month(df_all, test_start=33, label='target', clip_train=False, clip_test=False):
+    # Split labelled training data into train and validation sets
+    first_block = df_all.loc[df_all[label].notnull(), 'date_block_num'].min()
+    if test_start<34:
+        last_block = df_all.loc[df_all[label].notnull(), 'date_block_num'].max()
+    else:
+        last_block=34
+
+    train_blocks = (df_all['date_block_num']>=first_block) & (df_all['date_block_num']<=test_start-1)
+    test_blocks = (df_all['date_block_num']>=test_start) & (df_all['date_block_num']<=last_block)
+
+    df_train = df_all.loc[train_blocks]
+    df_test = df_all.loc[test_blocks]
+
+    print('Train data: date_block_num', df_train['date_block_num'].unique())
+    print('Test data: date_block_num', df_test['date_block_num'].unique())
+
+    if clip_train:
+        print('%s values in train data are clipped to [0, 20]' %label)
+        df_train[label] = df_train[label].clip(0, 20)
+
+    if last_block<34 and clip_test:
         print('%s values in test data are clipped to [0, 20]' %label)
         df_test[label] = df_test[label].clip(0, 20)
+    
+    X_train, y_train = df_train.drop(columns=[label]), df_train[label]
+    X_test, y_test = df_test.drop(columns=[label]), df_test[label]
 
-    print('Train data size:', df_train.shape)
-    print('Test data size:', df_test.shape)
-    return df_train, df_test
+    print('Number of observations in train:', X_train.shape[0])
+    print('Number of observations in test:', X_test.shape[0])
+    print('Number of attributes:', X_test.shape[1])
+    
+    del df_train, df_test
+    gc.collect()
+    return X_train, X_test, y_train, y_test
 
 
-def eval_model_pred(model, X_train, y_train, X_val, y_val, clip_val=True):
+def fit_eval_model(model, X_train, X_val, y_train, y_val, clip_val=True):
+    model.fit(X_train, y_train)
     pred_train = model.predict(X_train)
-    pred_val = model.predict(X_val)
+    pred_val = model.predict(X_val)      
     
     # truncate predictions to [0, 20] as for test data
     if clip_val:
@@ -316,7 +450,23 @@ def eval_model_pred(model, X_train, y_train, X_val, y_val, clip_val=True):
     rsquared = [r2_score(y_train, pred_train), r2_score(y_val, pred_val)]
     rmse = [np.sqrt(mean_squared_error(y_train, pred_train)), np.sqrt(mean_squared_error(y_val, pred_val))]
 
+    print(model.__class__.__name__)
     df_out = pd.DataFrame({'R-squared': np.round(rsquared, 3), 'RMSE': np.round(rmse, 3)},
                       index=['train', 'val'])
     print(df_out)
     return model
+
+
+def train_test_metrics(y_train, pred_train, y_test, pred_test, clip_train=False, clip_test=False):
+    if clip_train:
+        y_train = np.clip(y_train, 0, 20)
+        pred_train = np.clip(pred_train, 0, 20) 
+    if clip_test:
+        y_test = np.clip(y_test, 0, 20)
+        pred_test = np.clip(pred_test, 0, 20) 
+
+    rsquared = [r2_score(y_train, pred_train), r2_score(y_test, pred_test)]
+    rmse = [np.sqrt(mean_squared_error(y_train, pred_train)), np.sqrt(mean_squared_error(y_test, pred_test))]
+    df_out = pd.DataFrame({'R-squared': np.round(rsquared, 3), 'RMSE': np.round(rmse, 3)},
+                      index=['train', 'val'])
+    return df_out
