@@ -6,7 +6,7 @@ import pickle
 import lightgbm as lgb
 from itertools import product
 from functools import reduce
-from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.metrics import r2_score, mean_squared_error, confusion_matrix, recall_score
 from sklearn.preprocessing import StandardScaler, LabelEncoder, OneHotEncoder
 
 
@@ -508,5 +508,34 @@ class TrainLgbm(object):
         df_out = pd.DataFrame({'R-squared': np.round(rsquared, 3),
                                'RMSE': np.round(rmse, 3)},
                               index=['train', 'val'])
-    
         return df_out
+    
+    
+    def error_analysis(self, data='val'):
+        print('labels and predictions are clipped to [0,20]')
+        if data=='val':
+            print('residuals on validation data')
+            label = np.clip(self.y_val, 0, 20)
+            predicts = np.clip(self.pred_val, 0, 20)
+        else:
+            print('residuals on training data')
+            label = np.clip(self.y_train, 0, 20)
+            predicts = np.clip(self.pred_train, 0, 20)
+
+        df = pd.DataFrame({'y_clip' : label,
+                            'pred_clip' : predicts})
+
+        df['residual'] = df['y_clip'] - df['pred_clip']
+        df.boxplot(column='residual', by='y_clip', figsize=(8,4))
+        plt.show()
+        
+        df['residual_squared'] = df['residual']**2
+        
+        (100*df.groupby('y_clip')['residual_squared'].sum()/df['residual_squared'].sum()).plot(kind='bar')
+        plt.ylabel('residual_squared')
+        plt.show()
+        
+        df['true_zero'] = (df['y_clip']==0)
+        df['pred_zero'] = (df['pred_clip']==0)
+        print(confusion_matrix(df['true_zero'], df['pred_zero']))
+        return df
