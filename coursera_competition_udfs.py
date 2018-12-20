@@ -1,7 +1,9 @@
-import pandas as pd
 import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
 import gc
 import pickle
+import lightgbm as lgb
 from itertools import product
 from functools import reduce
 from sklearn.metrics import r2_score, mean_squared_error
@@ -355,11 +357,9 @@ def load_all_monthly_sales(lag_months=[1, 2, 3, 6, 12], seasonality=True, items=
     if shops:
         all_sales = add_shop_features(all_sales)
         filename += '_shops'
-#    print('generate and pickling file', filename)
-#    pkl_name = './' + filename + '.pkl'
-#    all_sales.to_pickle(pkl_name)
-    
-#    return pkl_name
+    pkl_name = './' + filename + '.pkl'
+    print('generate and pickling file', pkl_name)
+    all_sales.to_pickle(pkl_name)
     return all_sales
 
 
@@ -401,7 +401,7 @@ def inverse_label_encode_categ_cols(df, categ_cols):
     return proc
     
     
-def train_test_split_by_month(df_all, test_start=33, label='target', clip_train=False, clip_test=False):
+def train_test_split_by_month(df_all, test_start=33, label='target'):
     # Split labelled training data into train and validation sets
     first_block = df_all.loc[df_all[label].notnull(), 'date_block_num'].min()
     if test_start<34:
@@ -417,14 +417,6 @@ def train_test_split_by_month(df_all, test_start=33, label='target', clip_train=
 
     print('Train data: date_block_num', df_train['date_block_num'].unique())
     print('Test data: date_block_num', df_test['date_block_num'].unique())
-
-    if clip_train:
-        print('%s values in train data are clipped to [0, 20]' %label)
-        df_train[label] = df_train[label].clip(0, 20)
-
-    if last_block<34 and clip_test:
-        print('%s values in test data are clipped to [0, 20]' %label)
-        df_test[label] = df_test[label].clip(0, 20)
     
     X_train, y_train = df_train.drop(columns=[label]), df_train[label]
     X_test, y_test = df_test.drop(columns=[label]), df_test[label]
@@ -457,16 +449,64 @@ def fit_eval_model(model, X_train, X_val, y_train, y_val, clip_val=True):
     return model
 
 
-def train_test_metrics(y_train, pred_train, y_test, pred_test, clip_train=False, clip_test=False):
-    if clip_train:
-        y_train = np.clip(y_train, 0, 20)
-        pred_train = np.clip(pred_train, 0, 20) 
-    if clip_test:
-        y_test = np.clip(y_test, 0, 20)
-        pred_test = np.clip(pred_test, 0, 20) 
+class TrainLgbm(object):
 
-    rsquared = [r2_score(y_train, pred_train), r2_score(y_test, pred_test)]
-    rmse = [np.sqrt(mean_squared_error(y_train, pred_train)), np.sqrt(mean_squared_error(y_test, pred_test))]
-    df_out = pd.DataFrame({'R-squared': np.round(rsquared, 3), 'RMSE': np.round(rmse, 3)},
-                      index=['train', 'val'])
-    return df_out
+    def __init__(self, lgb_params, X_train, y_train, num_rounds, X_val, y_val,
+                 categoricals, stopping_rounds=20, verbose_eval=20):
+        self.lgb_params = lgb_params
+        self.X_train = X_train
+        self.y_train = y_train
+        self.num_rounds = num_rounds
+        self.X_val = X_val
+        self.y_val = y_val
+        self.categoricals = categoricals
+        self.stopping_rounds = stopping_rounds
+        self.evals_result = {}
+        self.verbose_eval = verbose_eval
+
+    def train_early_stop(self):
+        lgb_train = lgb.Dataset(self.X_train, self.y_train)
+        lgb_val = lgb.Dataset(self.X_val, self.y_val, reference=lgb_train)
+
+        bst = lgb.train(params = self.lgb_params,
+                        train_set = lgb_train,
+                        num_boost_round = self.num_rounds,
+                        valid_sets=[lgb_train, lgb_val],
+                        valid_names=['train', 'val'],
+                        categorical_feature=self.categoricals,
+                        early_stopping_rounds=self.stopping_rounds,
+                        evals_result=self.evals_result,
+                        verbose_eval=self.verbose_eval,
+                        keep_training_booster=True)
+
+        # extract predictions of the best model for further analysis
+        self.pred_train = bst._Booster__inner_predict(data_idx=0)
+        self.pred_val = bst._Booster__inner_predict(data_idx=1)
+        return bst
+    
+    def train_test_metrics(self, clip=False):
+        print('Performance metrics on train and val set')
+        if clip:
+            print('\tafter clipping all target values to [0, 20] range')
+            y_train = np.clip(self.y_train, 0, 20)
+            y_val = np.clip(self.y_val, 0, 20)
+            pred_train = np.clip(self.pred_train, 0, 20)
+            pred_val = np.clip(self.pred_val, 0, 20)
+        else:
+            print('\tusing given target values')
+            y_train = self.y_train
+            y_val = self.y_val
+            pred_train = self.pred_train
+            pred_val = self.pred_val
+
+        rsquared = [r2_score(y_train, pred_train),
+                    r2_score(y_val, pred_val)]
+
+        rmse = [np.sqrt(mean_squared_error(y_train, pred_train)),
+                np.sqrt(mean_squared_error(y_val, pred_val))]
+
+        df_out = pd.DataFrame({'R-squared': np.round(rsquared, 3),
+                               'RMSE': np.round(rmse, 3)},
+                              index=['train', 'val'])
+    
+        return df_out
