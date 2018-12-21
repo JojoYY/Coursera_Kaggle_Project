@@ -448,94 +448,46 @@ def fit_eval_model(model, X_train, X_val, y_train, y_val, clip_val=True):
     print(df_out)
     return model
 
-
-class TrainLgbm(object):
-
-    def __init__(self, lgb_params, X_train, y_train, num_rounds, X_val, y_val,
-                 categoricals, stopping_rounds=20, verbose_eval=20):
-        self.lgb_params = lgb_params
-        self.X_train = X_train
-        self.y_train = y_train
-        self.num_rounds = num_rounds
-        self.X_val = X_val
-        self.y_val = y_val
-        self.categoricals = categoricals
-        self.stopping_rounds = stopping_rounds
-        self.evals_result = {}
-        self.verbose_eval = verbose_eval
-
-    def train_early_stop(self):
-        lgb_train = lgb.Dataset(self.X_train, self.y_train)
-        lgb_val = lgb.Dataset(self.X_val, self.y_val, reference=lgb_train)
-
-        bst = lgb.train(params = self.lgb_params,
-                        train_set = lgb_train,
-                        num_boost_round = self.num_rounds,
-                        valid_sets=[lgb_train, lgb_val],
-                        valid_names=['train', 'val'],
-                        categorical_feature=self.categoricals,
-                        early_stopping_rounds=self.stopping_rounds,
-                        evals_result=self.evals_result,
-                        verbose_eval=self.verbose_eval,
-                        keep_training_booster=True)
-
-        # extract predictions of the best model for further analysis
-        self.pred_train = bst._Booster__inner_predict(data_idx=0)
-        self.pred_val = bst._Booster__inner_predict(data_idx=1)
-        return bst
     
-    def train_test_metrics(self, clip=False):
-        print('Performance metrics on train and val set')
-        if clip:
-            print('\tafter clipping all target values to [0, 20] range')
-            y_train = np.clip(self.y_train, 0, 20)
-            y_val = np.clip(self.y_val, 0, 20)
-            pred_train = np.clip(self.pred_train, 0, 20)
-            pred_val = np.clip(self.pred_val, 0, 20)
-        else:
-            print('\tusing given target values')
-            y_train = self.y_train
-            y_val = self.y_val
-            pred_train = self.pred_train
-            pred_val = self.pred_val
-
-        rsquared = [r2_score(y_train, pred_train),
-                    r2_score(y_val, pred_val)]
-
-        rmse = [np.sqrt(mean_squared_error(y_train, pred_train)),
-                np.sqrt(mean_squared_error(y_val, pred_val))]
-
-        df_out = pd.DataFrame({'R-squared': np.round(rsquared, 3),
-                               'RMSE': np.round(rmse, 3)},
-                              index=['train', 'val'])
-        return df_out
+def train_test_metrics(train_labels, val_labels, train_predicts, val_predicts):
     
+    rsquared = [r2_score(train_labels, train_predicts),
+                r2_score(val_labels, val_predicts)]
+
+    rmse = [np.sqrt(mean_squared_error(train_labels, train_predicts)),
+            np.sqrt(mean_squared_error(val_labels, val_predicts))]
+
+    df_out = pd.DataFrame({'R-squared': np.round(rsquared, 3),
+                           'RMSE': np.round(rmse, 3)},
+                          index=['train', 'val'])
+    return df_out
+
+
+def clipped_error_analysis(labels, predicts):
+    df = pd.DataFrame({'label' : labels, 'predict' : predicts})
+
+    df['residual'] = df['label'] - df['predict']
     
-    def error_analysis(self, data='val'):
-        print('labels and predictions are clipped to [0,20]')
-        if data=='val':
-            print('residuals on validation data')
-            label = np.clip(self.y_val, 0, 20)
-            predicts = np.clip(self.pred_val, 0, 20)
-        else:
-            print('residuals on training data')
-            label = np.clip(self.y_train, 0, 20)
-            predicts = np.clip(self.pred_train, 0, 20)
+    df.groupby('label')['residual'].mean().plot(kind='bar', figsize=(8,4))
+    plt.ylabel('residual (label - predict)')
+    plt.title('Mean Residuals by Label')
+    plt.show()
+    
+    df.boxplot(column='residual', by='label', figsize=(8,4))
+    plt.ylabel('residual (label - predict)')
+    plt.title('Distribution of Residuals by Label')
+    plt.suptitle('')
+    plt.show()
 
-        df = pd.DataFrame({'y_clip' : label,
-                            'pred_clip' : predicts})
+    df['residual_squared'] = df['residual']**2
 
-        df['residual'] = df['y_clip'] - df['pred_clip']
-        df.boxplot(column='residual', by='y_clip', figsize=(8,4))
-        plt.show()
-        
-        df['residual_squared'] = df['residual']**2
-        
-        (100*df.groupby('y_clip')['residual_squared'].sum()/df['residual_squared'].sum()).plot(kind='bar')
-        plt.ylabel('residual_squared')
-        plt.show()
-        
-        df['true_zero'] = (df['y_clip']==0)
-        df['pred_zero'] = (df['pred_clip']==0)
-        print(confusion_matrix(df['true_zero'], df['pred_zero']))
-        return df
+    (100*df.groupby('label')['residual_squared'].sum()/df['residual_squared'].sum()).plot(kind='bar', figsize=(8,4))
+    plt.ylabel('residual_squared')
+    plt.title('Contributions to SSR by Label')
+    plt.show()
+
+    df['true_zero'] = (df['label']==0)
+    df['pred_zero'] = (df['predict']==0)
+    print('confusion matrix of label vs predict zero sales:')
+    print(confusion_matrix(df['true_zero'], df['pred_zero']))
+    return df
